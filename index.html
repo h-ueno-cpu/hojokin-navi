@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>補助金ナビ — 建築系補助金 全国データベース（MVPモック）</title>
+<title>補助金ナビ — 建築系補助金 全国データベース（β版）</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <style>
@@ -120,6 +120,9 @@ table.dataTable{width:100%;border-collapse:collapse;min-width:860px;}
 .dangerBtn:hover{background:#fdf1f2;}
 .miniBtn{border:1px solid var(--rf-blue);background:#fff;color:var(--rf-blue);border-radius:6px;padding:4px 12px;font-size:0.85rem;font-weight:600;}
 .miniBtn:hover{background:#eaf6fc;}
+.srcBtn{display:inline-block;border:1px solid var(--rf-navy);background:var(--rf-navy);color:#fff;border-radius:6px;padding:3px 10px;font-size:0.8rem;font-weight:700;text-decoration:none;white-space:nowrap;}
+.srcBtn:hover{background:#0a4d80;border-color:#0a4d80;}
+.checkedAtTag{font-size:0.78rem;color:#8a97a2;}
 
 /* M4 段階ゲート */
 .gateFlow{display:flex;align-items:center;gap:0;flex-wrap:wrap;margin:8px 0;}
@@ -211,10 +214,10 @@ footer{background:var(--bg);border-top:1px solid var(--line);padding:18px;text-a
   <div class="heroBandInner">
     <div>
       <div class="heroTitle">補助金ナビ <span class="accent">全国の建築系補助金を、探す・提案する・申請する。</span></div>
-      <div class="heroSub">47都道府県・1741市区町村の役所情報をAIが巡回収集。リノベ不動産 加盟店向けMVPモック</div>
+      <div class="heroSub">47都道府県すべての公式情報から収集（各制度に公式ページリンク付き）。リノベ不動産 加盟店向けβ版</div>
     </div>
     <div class="heroActions">
-      <span class="mockBadge">MVPモック版（データは参考値）</span>
+      <span class="mockBadge">β版（最新情報は必ず公式ページで確認）</span>
       <button class="printBtn" onclick="window.print()">この画面を印刷</button>
     </div>
   </div>
@@ -267,7 +270,7 @@ footer{background:var(--bg);border-top:1px solid var(--line);padding:18px;text-a
     <div class="tableWrap">
       <table class="dataTable">
         <thead><tr>
-          <th>階層</th><th>自治体</th><th>制度名</th><th>カテゴリ</th><th>上限額</th><th>締切</th><th>活用度</th><th>状態</th>
+          <th>階層</th><th>自治体</th><th>制度名</th><th>カテゴリ</th><th>上限額</th><th>締切</th><th>活用度</th><th>状態</th><th>エビデンス</th>
         </tr></thead>
         <tbody id="dbTableBody"></tbody>
       </table>
@@ -359,7 +362,7 @@ footer{background:var(--bg);border-top:1px solid var(--line);padding:18px;text-a
 </main>
 
 <footer>
-  補助金ナビ MVPモック — 掲載中の制度名・金額・期限は実在制度を参考にしたモック参考値です。実際の申請条件は必ず各自治体の公式情報をご確認ください。<br>
+  補助金ナビ β版 — 掲載情報は各公式サイトから取得した時点の要約です（各制度の取得日を表示）。金額・期限・申請条件は必ず公式ページでご確認ください。M3提案・M4申請管理・📚ナレッジのサンプルデータはデモ用の架空データです。<br>
   地図タイル出典：<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院</a>
 </footer>
 
@@ -533,6 +536,7 @@ function buildSeedState(){
   return {
     currentTab:"tabM1",
     currentUserId:"u01",
+    dataVersion:0,
     users, subsidies, intakeQueue, applications, history, violations, timeline, inquiries, knowledge,
     searchQuery:"", activeCategories:[], selectedArea:null,
     matchSelection:{ workTypes:["断熱・省エネ"] },
@@ -578,7 +582,13 @@ function escapeHtml(str){
   ));
 }
 function fmtMan(v){ return v >= 10000 ? (v/10000)+"億円" : v+"万円"; }
+function fmtAmount(v){ return v == null ? "公式参照" : fmtMan(v); }
+function deadlineDisplay(sub){
+  if(!sub.deadline) return sub.deadlineNote || "通年・随時";
+  return sub.deadline;
+}
 function daysUntil(dateStr){
+  if(!dateStr) return null;
   const d = new Date(dateStr + "T23:59:59");
   return Math.floor((d - MOCK_TODAY) / 86400000);
 }
@@ -634,17 +644,19 @@ function classifyLevel(sub){
 function rubricScore(sub){
   const items = [];
   let amountPts = 5;
-  if(sub.maxAmount >= 150) amountPts = 25;
+  if(sub.maxAmount == null) amountPts = 10;
+  else if(sub.maxAmount >= 150) amountPts = 25;
   else if(sub.maxAmount >= 100) amountPts = 20;
   else if(sub.maxAmount >= 50) amountPts = 15;
   else if(sub.maxAmount >= 20) amountPts = 10;
   items.push({ label:"上限額", pts:amountPts, max:25 });
-  items.push({ label:"併用可否", pts: sub.combinable ? 15 : 5, max:15 });
-  items.push({ label:"対象工事の広さ", pts: Math.min(5, sub.scopeBreadth) * 4, max:20 });
-  items.push({ label:"申請しやすさ", pts: Math.min(5, sub.ease) * 4, max:20 });
+  items.push({ label:"併用可否", pts: sub.combinable === true ? 15 : (sub.combinable === false ? 5 : 10), max:15 });
+  items.push({ label:"対象工事の広さ", pts: Math.min(5, sub.scopeBreadth || 3) * 4, max:20 });
+  items.push({ label:"申請しやすさ", pts: Math.min(5, sub.ease || 3) * 4, max:20 });
   const remain = daysUntil(sub.deadline);
   let dlPts = 0;
-  if(remain >= 180) dlPts = 20;
+  if(remain === null) dlPts = 15;
+  else if(remain >= 180) dlPts = 20;
   else if(remain >= 90) dlPts = 15;
   else if(remain >= 30) dlPts = 10;
   else if(remain >= 7) dlPts = 5;
@@ -652,10 +664,19 @@ function rubricScore(sub){
   return { total: items.reduce((a,b) => a + b.pts, 0), items };
 }
 function hardCheck(sub){
-  if(daysUntil(sub.deadline) < 0) return { status:"stopped", reason:"締切超過" };
+  const remain = daysUntil(sub.deadline);
+  if(remain !== null && remain < 0) return { status:"stopped", reason:"締切超過" };
   if(sub.budgetStatus === "closed") return { status:"stopped", reason:"予算枠終了" };
-  if(daysSince(sub.lastUpdated) > 90) return { status:"needsCheck", reason:"情報未更新90日超" };
+  if(sub.lastUpdated && daysSince(sub.lastUpdated) > 90) return { status:"needsCheck", reason:"情報未更新90日超" };
   return { status:"active", reason:null };
+}
+function sourceLinkHtml(sub){
+  if(!sub.url) return "";
+  return '<a class="srcBtn" href="' + escapeHtml(sub.url) + '" target="_blank" rel="noopener">公式ページ↗</a>';
+}
+function bindSourceLinks(container){
+  container.querySelectorAll(".srcBtn").forEach(a =>
+    a.addEventListener("click", ev => ev.stopPropagation()));
 }
 function evaluateSubsidy(sub){
   return { level: classifyLevel(sub), score: rubricScore(sub), check: hardCheck(sub) };
@@ -892,9 +913,9 @@ function subsidyCardHtml(sub){
     '<div class="scName">' + escapeHtml(sub.name) + '</div>' +
     '<div class="scMeta">' + levelBadgeHtml(ev.level.level) +
     '<span>' + escapeHtml(area) + '</span>' +
-    '<span>上限 ' + fmtMan(sub.maxAmount) + '</span>' +
-    '<span>締切 ' + escapeHtml(sub.deadline) + '</span>' +
-    scorePillHtml(ev.score.total) + ' ' + statusBadgeHtml(ev.check) + '</div></div>';
+    '<span>上限 ' + escapeHtml(fmtAmount(sub.maxAmount)) + '</span>' +
+    '<span>締切 ' + escapeHtml(deadlineDisplay(sub)) + '</span>' +
+    scorePillHtml(ev.score.total) + ' ' + statusBadgeHtml(ev.check) + ' ' + sourceLinkHtml(sub) + '</div></div>';
 }
 function renderResultPanel(){
   const panel = document.getElementById("resultPanel");
@@ -910,6 +931,7 @@ function renderResultPanel(){
     ? list.map(subsidyCardHtml).join("")
     : '<div class="emptyNote">該当する補助金がありません。条件を変えるか、地図で別の自治体を選んでください。</div>';
   panel.innerHTML = html;
+  bindSourceLinks(panel);
   panel.querySelectorAll(".subsidyCard").forEach(card =>
     card.addEventListener("click", () => openSubsidyDetail(card.dataset.subid)));
   const clearBtn = document.getElementById("clearFilterBtn");
@@ -943,16 +965,17 @@ function openSubsidyDetail(subId){
     [["対象エリア", area],
      ["実施主体", sub.authorityText],
      ["カテゴリ", sub.categories.join("、")],
-     ["補助上限額", fmtMan(sub.maxAmount) + "（モック参考値）"],
-     ["申請締切", sub.deadline + "（残り" + Math.max(0, daysUntil(sub.deadline)) + "日）"],
-     ["併用", sub.combinable ? "他制度と併用できる場合あり" : "併用不可の場合が多い"],
+     ["補助上限額", fmtAmount(sub.maxAmount) + (sub.maxAmount != null ? "（最新は公式ページで確認）" : "")],
+     ["申請締切", (() => { const r = daysUntil(sub.deadline); return r === null ? deadlineDisplay(sub) : sub.deadline + "（残り" + Math.max(0, r) + "日）"; })()],
+     ["併用", sub.combinable === true ? "他制度と併用できる場合あり" : (sub.combinable === false ? "併用不可の場合が多い" : "要確認（公式ページ参照）")],
      ["対象工事", sub.targetWorks],
-     ["情報最終更新", sub.lastUpdated]]
+     ["情報取得日", (sub.checkedAt || sub.lastUpdated || "-") + (sub.sourceNote ? "　出典：" + sub.sourceNote : "")]]
      .map(([k,v]) => '<tr><th style="text-align:left;padding:7px 10px;background:#f2f7fb;color:#02375f;white-space:nowrap;border-bottom:1px solid #dde6ec;">' + k + '</th><td style="padding:7px 10px;border-bottom:1px solid #dde6ec;">' + escapeHtml(v) + '</td></tr>').join("") +
     '</table>' +
     '<p style="margin:12px 0;color:#3d4c58;">' + escapeHtml(sub.summary) + '</p>' +
     '<h4 style="color:#02375f;margin:14px 0 6px;">活用度スコア ' + ev.score.total + '点（100点ルーブリック）</h4>' + rubricHtml +
-    '<p style="margin-top:12px;font-size:0.85rem;color:#7a8a96;">3層自動振分の根拠：' + escapeHtml(ev.level.reason) + '</p>';
+    '<p style="margin-top:12px;font-size:0.85rem;color:#7a8a96;">3層自動振分の根拠：' + escapeHtml(ev.level.reason) + '</p>' +
+    (sub.url ? '<p style="margin-top:12px;"><a class="srcBtn" style="font-size:0.95rem;padding:8px 18px;" href="' + escapeHtml(sub.url) + '" target="_blank" rel="noopener">公式ページで最新情報を確認する↗</a></p>' : '');
   openModal({
     title: sub.name,
     bodyHtml: body,
@@ -1030,11 +1053,13 @@ function renderDbTable(){
       '<td>' + area + '</td>' +
       '<td style="font-weight:600;color:#02375f;">' + escapeHtml(sub.name) + '</td>' +
       '<td style="font-size:0.85rem;">' + escapeHtml(sub.categories.join("、")) + '</td>' +
-      '<td>' + fmtMan(sub.maxAmount) + '</td>' +
-      '<td>' + escapeHtml(sub.deadline) + '</td>' +
+      '<td>' + escapeHtml(fmtAmount(sub.maxAmount)) + '</td>' +
+      '<td>' + escapeHtml(deadlineDisplay(sub)) + '</td>' +
       '<td>' + scorePillHtml(ev.score.total) + '</td>' +
-      '<td>' + statusBadgeHtml(ev.check) + '</td></tr>';
+      '<td>' + statusBadgeHtml(ev.check) + '</td>' +
+      '<td>' + (sub.url ? sourceLinkHtml(sub) + '<br><span class="checkedAtTag">' + escapeHtml(sub.checkedAt || "") + '取得</span>' : '<span class="checkedAtTag">未収集</span>') + '</td></tr>';
   }).join("");
+  bindSourceLinks(tbody);
   tbody.querySelectorAll("tr").forEach(tr =>
     tr.addEventListener("click", () => openSubsidyDetail(tr.dataset.subid)));
 }
@@ -1145,11 +1170,12 @@ function renderMatchResults(){
       '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center;">' +
       '<div><span style="font-weight:700;color:#02375f;">' + escapeHtml(sub.name) + '</span> ' +
       levelBadgeHtml(ev.level.level) + (r.needsCheck ? ' <span class="badge badgeCheck">要確認</span>' : '') +
-      '<div style="font-size:0.87rem;color:#5a6b78;margin-top:2px;">上限 ' + fmtMan(sub.maxAmount) + '　締切 ' + escapeHtml(sub.deadline) +
+      '<div style="font-size:0.87rem;color:#5a6b78;margin-top:2px;">上限 ' + escapeHtml(fmtAmount(sub.maxAmount)) + '　締切 ' + escapeHtml(deadlineDisplay(sub)) +
       (kn.length ? '　<span style="color:#8a6a10;">💡関連ナレッジ' + kn.length + '件</span>' : '') + '</div></div>' +
-      '<div style="display:flex;gap:8px;align-items:center;">' + scorePillHtml(ev.score.total) +
+      '<div style="display:flex;gap:8px;align-items:center;">' + scorePillHtml(ev.score.total) + sourceLinkHtml(sub) +
       '<button class="miniBtn" data-proposal="' + sub.id + '">提案文をつくる</button></div></div></div>';
   }).join("");
+  bindSourceLinks(wrap);
   wrap.querySelectorAll("[data-proposal]").forEach(btn =>
     btn.addEventListener("click", () => {
       state.selectedProposalSubId = btn.dataset.proposal;
@@ -1171,9 +1197,11 @@ function buildProposalText(sub){
   lines.push("");
   lines.push("■ 制度名：" + sub.name);
   lines.push("■ 実施主体：" + sub.authorityText + "（" + ev.level.level + "の制度）");
-  lines.push("■ 補助上限：" + fmtMan(sub.maxAmount) + "（参考値・最新の公式情報をご確認ください）");
-  lines.push("■ 申請締切：" + sub.deadline + "（残り約" + Math.max(0, daysUntil(sub.deadline)) + "日）");
+  lines.push("■ 補助上限：" + fmtAmount(sub.maxAmount) + "（最新の公式情報をご確認ください）");
+  const remainDays = daysUntil(sub.deadline);
+  lines.push("■ 申請締切：" + (remainDays === null ? deadlineDisplay(sub) : sub.deadline + "（残り約" + Math.max(0, remainDays) + "日）"));
   lines.push("■ 対象工事：" + sub.targetWorks);
+  if(sub.url) lines.push("■ 公式ページ：" + sub.url);
   lines.push("");
   lines.push("【ポイント】");
   lines.push("・" + sub.summary);
@@ -1470,11 +1498,28 @@ function renderAll(){
   renderUserTable();
   renderAutoOps();
 }
+/* ---------- 外部データ読込（data/subsidies.json・失敗時は内蔵データで動作） ---------- */
+const DATA_URL = "data/subsidies.json";
+function loadRemoteData(){
+  fetch(DATA_URL, { cache:"no-cache" })
+    .then(r => { if(!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(data => {
+      if(!data || !Array.isArray(data.subsidies) || !data.subsidies.length) return;
+      if(data.version === state.dataVersion) return;
+      const userAdded = state.subsidies.filter(s => /x$/.test(s.id));
+      state.subsidies = data.subsidies.concat(userAdded);
+      state.dataVersion = data.version;
+      commit();
+      showToast("補助金データを更新しました（全" + data.subsidies.length + "件・" + (data.updatedAt || "") + "時点）", "ok");
+    })
+    .catch(() => { /* オフライン・file://時は内蔵データで動作 */ });
+}
 document.addEventListener("DOMContentLoaded", () => {
   initMap();
   document.getElementById("searchInput").value = state.searchQuery || "";
   renderAll();
   saveState();
+  loadRemoteData();
 });
 </script>
 </body>
