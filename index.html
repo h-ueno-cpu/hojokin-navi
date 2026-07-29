@@ -386,6 +386,16 @@ footer{background:var(--bg);border-top:1px solid var(--line);padding:18px;text-a
 const STORE_KEY = "hojokinNaviV1";
 const MOCK_TODAY = new Date();
 
+/* ---------- 公開モード判定 ----------
+   GitHub Pages（一般公開URL）で開いた場合は、加盟店の内部業務ビュー（M2〜M4・ナレッジ・設定）を隠し、
+   M1（補助金さがす）のみを表示する。localhost/file://等（社内での確認・作業用）ではフル機能のまま。
+   URLに ?internal=1 を付けると公開ホストでもフル機能を強制表示できる（社内デモ等）。
+   URLに ?public=1 を付けるとローカルでも公開モードの見た目を確認できる。 */
+const _qs = new URLSearchParams(location.search);
+const IS_PUBLIC_HOST = location.hostname.endsWith("github.io");
+const IS_PUBLIC = _qs.get("internal") === "1" ? false : (_qs.get("public") === "1" ? true : IS_PUBLIC_HOST);
+const PUBLIC_TABS = ["tabM1"];
+
 /* ---------- カテゴリ・段階ゲート定義 ---------- */
 const CATEGORY_LIST = ["耐震","断熱・省エネ","バリアフリー","子育て","空き家活用","設備","その他"];
 const GATE_STAGES = ["下書き","店舗確認","本部確認","申請提出","交付決定"];
@@ -681,9 +691,10 @@ function bindSourceLinks(container){
 function evaluateSubsidy(sub){
   return { level: classifyLevel(sub), score: rubricScore(sub), check: hardCheck(sub) };
 }
+const SCORE_TIP = "活用度スコア（100点満点）：上限額(25)・併用可否(15)・対象工事の広さ(20)・申請しやすさ(20)・締切余裕(20)の5項目を自動採点した合計。詳しくは補助金カードをクリック。";
 function scorePillHtml(total){
   const cls = total >= 70 ? "scoreHigh" : (total >= 45 ? "scoreMid" : "scoreLow");
-  return '<span class="scorePill ' + cls + '">' + total + '点</span>';
+  return '<span class="scorePill ' + cls + '" title="' + escapeHtml(SCORE_TIP) + '">' + total + '点</span>';
 }
 function levelBadgeHtml(level){
   const cls = level === "国" ? "badgeLevelNation" : (level === "都道府県" ? "badgeLevelPref" : "badgeLevelCity");
@@ -699,14 +710,28 @@ function statusBadgeHtml(check){
    タブ・担当者切替（必ず再描画関数を通す）
 ========================================================= */
 document.querySelectorAll(".tabBtn").forEach(btn => {
-  btn.addEventListener("click", () => { state.currentTab = btn.dataset.tab; commit(); });
+  btn.addEventListener("click", () => {
+    if(IS_PUBLIC && !PUBLIC_TABS.includes(btn.dataset.tab)) return;
+    state.currentTab = btn.dataset.tab; commit();
+  });
 });
 document.getElementById("userSelect").addEventListener("change", ev => {
   state.currentUserId = ev.target.value; commit();
   showToast("操作担当者を「" + userById(state.currentUserId).name + "」に切り替えました");
 });
 
+function applyPublicMode(){
+  if(!IS_PUBLIC) return;
+  document.querySelectorAll(".tabBtn").forEach(btn => {
+    if(!PUBLIC_TABS.includes(btn.dataset.tab)) btn.style.display = "none";
+  });
+  const userSwitch = document.querySelector(".userSwitch");
+  if(userSwitch) userSwitch.style.display = "none";
+  if(!PUBLIC_TABS.includes(state.currentTab)) state.currentTab = "tabM1";
+}
+
 function renderTabs(){
+  applyPublicMode();
   document.querySelectorAll(".tabBtn").forEach(btn =>
     btn.classList.toggle("active", btn.dataset.tab === state.currentTab));
   document.querySelectorAll(".tabPanel").forEach(p =>
@@ -744,6 +769,19 @@ let prefLayer = null;
 const prefBoundsByName = {};
 const muniLayers = {};
 const muniFetching = {};
+// ズーム/パン中にレイヤーが入れ替わるとmouseoutが取りこぼされ、
+// ハイライトが複数箇所に残ることがあるため、ホバー中のポリゴンを1つだけ管理して確実に解除する。
+let hoveredBoundaryLayer = null;
+function setBoundaryHover(ly){
+  if(hoveredBoundaryLayer && hoveredBoundaryLayer !== ly) hoveredBoundaryLayer.setStyle(BOUNDARY_STYLE);
+  ly.setStyle(BOUNDARY_HOVER);
+  ly.bringToFront();
+  hoveredBoundaryLayer = ly;
+}
+function clearBoundaryHover(ly){
+  ly.setStyle(BOUNDARY_STYLE);
+  if(hoveredBoundaryLayer === ly) hoveredBoundaryLayer = null;
+}
 
 function muniDisplayName(props){
   const gun = props.N03_003 || "";
@@ -761,8 +799,8 @@ function loadPrefBoundaries(){
           const name = feature.properties.N03_001;
           prefBoundsByName[name] = layer.getBounds();
           layer.bindTooltip(escapeHtml(name), { sticky:true, direction:"top" });
-          layer.on("mouseover", () => { layer.setStyle(BOUNDARY_HOVER); layer.bringToFront(); });
-          layer.on("mouseout", () => prefLayer.resetStyle(layer));
+          layer.on("mouseover", () => setBoundaryHover(layer));
+          layer.on("mouseout", () => clearBoundaryHover(layer));
           layer.on("click", ev => {
             state.selectedArea = { type:"pref", name };
             commit();
@@ -786,8 +824,8 @@ function ensureMuniLayer(code){
           const nm = muniDisplayName(feature.properties);
           const prefName = feature.properties.N03_001 || "";
           ly.bindTooltip(escapeHtml(nm.label), { sticky:true, direction:"top" });
-          ly.on("mouseover", () => { ly.setStyle(BOUNDARY_HOVER); ly.bringToFront(); });
-          ly.on("mouseout", () => layer.resetStyle(ly));
+          ly.on("mouseover", () => setBoundaryHover(ly));
+          ly.on("mouseout", () => clearBoundaryHover(ly));
           ly.on("click", () => {
             state.selectedArea = { type:"city", name:nm.select, pref:prefName };
             commit();
@@ -802,6 +840,8 @@ function ensureMuniLayer(code){
 }
 function updateBoundaryLayers(){
   if(!gsiMap) return;
+  // レイヤー入れ替え中はホバー状態が不整合になりやすいので、いったんクリアしてから組み直す
+  if(hoveredBoundaryLayer){ hoveredBoundaryLayer.setStyle(BOUNDARY_STYLE); hoveredBoundaryLayer = null; }
   const zoom = gsiMap.getZoom();
   if(zoom < CITY_PIN_ZOOM){
     if(prefLayer && !gsiMap.hasLayer(prefLayer)) prefLayer.addTo(gsiMap);
@@ -830,26 +870,29 @@ function initMap(){
     minZoom:5, maxZoom:14
   }).addTo(gsiMap);
   markerLayer = L.layerGroup().addTo(gsiMap);
-  gsiMap.on("zoomend", renderMapPins);
+  gsiMap.on("zoomend moveend", renderMapPins);
   gsiMap.on("zoomend moveend", updateBoundaryLayers);
   loadPrefBoundaries();
 }
+const PIN_ICON_CACHE = {};
 function pinIcon(kind){
+  if(PIN_ICON_CACHE[kind]) return PIN_ICON_CACHE[kind];
   const color = kind === "pref" ? "#02375f" : "#119cda";
-  return L.divIcon({
+  const icon = L.divIcon({
     className:"",
     html:'<div style="width:22px;height:22px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:' + color + ';border:2px solid #fff;box-shadow:0 2px 5px rgba(0,0,0,.35);"></div>',
     iconSize:[22,22], iconAnchor:[11,22]
   });
+  PIN_ICON_CACHE[kind] = icon;
+  return icon;
 }
 function renderMapPins(){
   if(!gsiMap || !markerLayer) return;
   markerLayer.clearLayers();
   const zoom = gsiMap.getZoom();
-  const evaluated = state.subsidies.map(s => ({ sub:s, ev:evaluateSubsidy(s) }));
   if(zoom < CITY_PIN_ZOOM){
     const prefGroups = {};
-    evaluated.forEach(({sub}) => {
+    state.subsidies.forEach(sub => {
       if(sub.lat == null) return;
       if(!prefGroups[sub.pref]) prefGroups[sub.pref] = { lat:sub.lat, lng:sub.lng, count:0 };
       prefGroups[sub.pref].count++;
@@ -860,8 +903,11 @@ function renderMapPins(){
       m.on("click", () => { state.selectedArea = { type:"pref", name:pref }; commit(); });
     });
   }else{
-    evaluated.forEach(({sub}) => {
+    // 画面外のピンは描画しない（表示範囲に少し余白を持たせてパン直後の欠けを防ぐ）
+    const view = gsiMap.getBounds().pad(0.3);
+    state.subsidies.forEach(sub => {
       if(sub.lat == null) return;
+      if(!view.contains([sub.lat, sub.lng])) return;
       const areaName = sub.city || sub.pref;
       const m = L.marker([sub.lat, sub.lng], { icon:pinIcon(sub.city ? "city" : "pref") }).addTo(markerLayer);
       m.bindTooltip(escapeHtml(areaName) + "：" + escapeHtml(sub.name), { direction:"top", offset:[0,-20] });
@@ -875,6 +921,19 @@ function renderMapPins(){
 function filteredSubsidies(){
   const q = (state.searchQuery || "").trim();
   const cats = state.activeCategories;
+  const terms = q.split(/[\s　]+/).filter(Boolean);
+  // 検索語が市区町村名・都道府県名に一致する場合、その都道府県の制度（県レベル）と国の制度も対象に含める
+  // （地図でエリアをクリックした時「全国制度を含む」のと同じ考え方。例：「仙台」で宮城県・国の制度も出す）
+  const prefsFromAreaMatch = new Set();
+  const areaMatchedTerms = new Set();
+  if(terms.length){
+    state.subsidies.forEach(sub => {
+      terms.forEach(t => {
+        if(sub.city && sub.city.includes(t)){ prefsFromAreaMatch.add(sub.pref); areaMatchedTerms.add(t); }
+        else if(sub.pref !== "全国" && sub.pref.includes(t)){ prefsFromAreaMatch.add(sub.pref); areaMatchedTerms.add(t); }
+      });
+    });
+  }
   return state.subsidies.filter(sub => {
     if(cats.length && !sub.categories.some(c => cats.includes(c))) return false;
     if(state.selectedArea){
@@ -883,10 +942,17 @@ function filteredSubsidies(){
       if(a.type === "pref" && !isNation && sub.pref !== a.name) return false;
       if(a.type === "city" && !isNation && sub.city !== a.name && !(sub.city === "" && sub.pref === a.pref)) return false;
     }
-    if(q){
+    if(terms.length){
       const hay = [sub.name, sub.pref, sub.city, sub.summary, sub.targetWorks, sub.categories.join(" ")].join(" ");
-      const terms = q.split(/[\s　]+/).filter(Boolean);
-      if(!terms.every(t => hay.includes(t))) return false;
+      const textMatch = terms.every(t => hay.includes(t));
+      let areaLevelMatch = false;
+      const isMatchedPrefLevel = sub.city === "" && sub.pref !== "全国" && prefsFromAreaMatch.has(sub.pref);
+      const isNational = sub.pref === "全国";
+      if(!textMatch && (isMatchedPrefLevel || isNational) && areaMatchedTerms.size){
+        const remainingTerms = terms.filter(t => !areaMatchedTerms.has(t));
+        areaLevelMatch = remainingTerms.every(t => hay.includes(t));
+      }
+      if(!textMatch && !areaLevelMatch) return false;
     }
     return true;
   });
@@ -950,12 +1016,19 @@ function runSearch(){
 }
 
 /* ---------- 補助金詳細モーダル（M1/M2共通） ---------- */
+const SCORE_ITEM_TIPS = {
+  "上限額":"補助の上限額が高いほど高得点。公式に金額の明記がない場合は中間点。",
+  "併用可否":"他の補助制度と併用できる場合に高得点。併用不可の場合は低め、要確認の場合は中間点。",
+  "対象工事の広さ":"対象になる工事の種類・範囲が広いほど高得点（例：断熱・耐震・バリアフリーなど複数カテゴリに該当）。",
+  "申請しやすさ":"必要書類の少なさなど、申請手続きの簡便さが高いほど高得点。",
+  "締切余裕":"申請締切までの残り日数が多い、または通年・随時受付であるほど高得点。"
+};
 function openSubsidyDetail(subId){
   const sub = subsidyById(subId);
   if(!sub) return;
   const ev = evaluateSubsidy(sub);
   const rubricHtml = ev.score.items.map(it =>
-    '<div class="rubricRow"><span>' + escapeHtml(it.label) + '（' + it.max + '点）</span>' +
+    '<div class="rubricRow" title="' + escapeHtml(SCORE_ITEM_TIPS[it.label] || "") + '"><span>' + escapeHtml(it.label) + '（' + it.max + '点）</span>' +
     '<div class="rubricBarBg"><div class="rubricBarFill" style="width:' + Math.round(it.pts / it.max * 100) + '%"></div></div>' +
     '<strong>' + it.pts + '点</strong></div>').join("");
   const area = sub.pref === "全国" ? "全国（国の制度）" : sub.pref + (sub.city ? " " + sub.city : "");
@@ -973,22 +1046,26 @@ function openSubsidyDetail(subId){
      .map(([k,v]) => '<tr><th style="text-align:left;padding:7px 10px;background:#f2f7fb;color:#02375f;white-space:nowrap;border-bottom:1px solid #dde6ec;">' + k + '</th><td style="padding:7px 10px;border-bottom:1px solid #dde6ec;">' + escapeHtml(v) + '</td></tr>').join("") +
     '</table>' +
     '<p style="margin:12px 0;color:#3d4c58;">' + escapeHtml(sub.summary) + '</p>' +
-    '<h4 style="color:#02375f;margin:14px 0 6px;">活用度スコア ' + ev.score.total + '点（100点ルーブリック）</h4>' + rubricHtml +
+    '<h4 style="color:#02375f;margin:14px 0 6px;">活用度スコア ' + ev.score.total + '点（100点ルーブリック）</h4>' +
+    '<p style="margin:0 0 10px;font-size:0.85rem;color:#7a8a96;">補助上限額・併用可否・対象工事の広さ・申請しやすさ・締切余裕の5項目を自動採点した合計です（各項目にカーソルを合わせると採点基準を表示）。制度そのものの優劣ではなく、条件が揃っているかの目安としてご利用ください。</p>' +
+    rubricHtml +
     '<p style="margin-top:12px;font-size:0.85rem;color:#7a8a96;">3層自動振分の根拠：' + escapeHtml(ev.level.reason) + '</p>' +
     (sub.url ? '<p style="margin-top:12px;"><a class="srcBtn" style="font-size:0.95rem;padding:8px 18px;" href="' + escapeHtml(sub.url) + '" target="_blank" rel="noopener">公式ページで最新情報を確認する↗</a></p>' : '');
+  const modalActions = [];
+  if(!IS_PUBLIC){
+    modalActions.push({ label:"この補助金で提案をつくる（M3へ）", onClick:() => {
+        state.currentTab = "tabM3";
+        if(sub.pref !== "全国"){ state.matchSelection.pref = sub.pref; state.matchSelection.city = sub.city || ""; }
+        state.matchSelection.workTypes = sub.categories.filter(c => CATEGORY_LIST.includes(c)).slice(0, 2);
+        commit();
+        showToast("M3 提案づくりに条件を引き継ぎました");
+      } });
+  }
+  modalActions.push({ label:"閉じる", kind:"sub" });
   openModal({
     title: sub.name,
     bodyHtml: body,
-    actions: [
-      { label:"この補助金で提案をつくる（M3へ）", onClick:() => {
-          state.currentTab = "tabM3";
-          if(sub.pref !== "全国"){ state.matchSelection.pref = sub.pref; state.matchSelection.city = sub.city || ""; }
-          state.matchSelection.workTypes = sub.categories.filter(c => CATEGORY_LIST.includes(c)).slice(0, 2);
-          commit();
-          showToast("M3 提案づくりに条件を引き継ぎました");
-        } },
-      { label:"閉じる", kind:"sub" }
-    ]
+    actions: modalActions
   });
 }
 
@@ -1080,7 +1157,8 @@ function pushTimeline(type, text){
 ========================================================= */
 function prefList(){
   const set = new Set(state.subsidies.filter(s => s.pref !== "全国").map(s => s.pref));
-  return Array.from(set).sort();
+  // 文字コード順ではなく北海道→沖縄の地理順（PREF_CODES）で並べる
+  return Array.from(set).sort((a, b) => (PREF_CODES[a] || "99").localeCompare(PREF_CODES[b] || "99"));
 }
 function cityListFor(pref){
   const set = new Set(state.subsidies.filter(s => s.pref === pref && s.city).map(s => s.city));
